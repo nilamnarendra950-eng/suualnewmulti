@@ -22,13 +22,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-app.secret_key = "sujal_hawk_hybrid_2026"
+app.secret_key = "sujal_hawk_sessionid_2026"
 
 IST = pytz.timezone('Asia/Kolkata')
 
 state = {"running": False, "sent": 0, "logs": [], "start_time": None}
 cfg = {
-    "accounts": [],
+    "sessionids": [],           # ← Changed to sessionids
     "thread_id": 0,
     "messages": [],
     "name_bases": [],
@@ -63,8 +63,8 @@ def log(msg):
         state["logs"] = state["logs"][-500:]
     logger.info(full_msg)
 
-def get_client(acc):
-    session_file = f"session_{acc['username']}.json"
+def get_client(sessionid):
+    session_file = f"session_{sessionid[:10]}.json"   # Short name for file
     cl = Client()
     cl.delay_range = [15, 40]
     device = random.choice(DEVICES)
@@ -75,38 +75,33 @@ def get_client(acc):
         try:
             cl.load_settings(session_file)
             cl.get_timeline_feed()
-            log(f"✅ Session loaded → {acc['username']}")
+            log(f"✅ Session loaded")
             return cl
         except:
             pass
 
     try:
-        cl.login(acc["username"], acc["password"])
+        cl.login_by_sessionid(sessionid)
         cl.dump_settings(session_file)
-        log(f"✅ LOGIN SUCCESS → {acc['username']}")
+        log(f"✅ LOGIN SUCCESS (Session ID)")
         return cl
     except Exception as e:
-        log(f"❌ LOGIN FAILED → {acc['username']} | {str(e)[:60]}")
+        log(f"❌ LOGIN FAILED | {str(e)[:60]}")
         return None
 
 def change_name(cl, thread_id, new_name):
-    # === HYBRID METHOD ===
-    # 1. Official Method (Pehle try)
+    # Hybrid Method
     try:
         cl.direct_thread_update_title(thread_id, new_name)
         return True
     except:
         pass
 
-    # 2. GraphQL Fallback (Agar official fail ho)
     for _ in range(3):
         try:
             csrf = cl.private.cookies.get("csrftoken", "")
             cl.private.headers.update({"X-CSRFToken": csrf})
-            payload = {
-                "doc_id": "29088580780787855",
-                "variables": json.dumps({"thread_fbid": str(thread_id), "new_title": new_name})
-            }
+            payload = {"doc_id": "29088580780787855", "variables": json.dumps({"thread_fbid": str(thread_id), "new_title": new_name})}
             r = cl.private.post("https://www.instagram.com/api/graphql/", data=payload, timeout=15)
             if r.status_code == 200:
                 return True
@@ -118,15 +113,15 @@ def change_name(cl, thread_id, new_name):
 def health_check():
     while True:
         if state["running"]:
-            log("💓 HEARTBEAT — Script alive (Hybrid Method)")
+            log("💓 HEARTBEAT — Script alive")
         time.sleep(1800)
 
 def bomber():
     clients = {}
-    for acc in cfg["accounts"]:
-        cl = get_client(acc)
+    for idx, sid in enumerate(cfg["sessionids"]):
+        cl = get_client(sid)
         if cl:
-            clients[acc["username"]] = cl
+            clients[idx] = cl
 
     if not clients:
         log("❌ NO WORKING ACCOUNTS!")
@@ -143,19 +138,17 @@ def bomber():
     message_count = 0
 
     while state["running"]:
-        username = acc_list[acc_index]
-        cl = clients[username]
+        cl = clients[acc_list[acc_index]]
 
         try:
             msg = random.choice(cfg["messages"])
             cl.direct_send(msg, thread_ids=[cfg["thread_id"]])
             state["sent"] += 1
             message_count += 1
-            log(f"SENT #{state['sent']} (Acc: {username})")
+            log(f"SENT #{state['sent']} (Acc #{acc_index+1})")
 
             time.sleep(cfg["message_delay"])
 
-            # Name change sirf har 10th message pe (Hybrid)
             if message_count % 10 == 0 and cfg["name_bases"]:
                 base = cfg["name_bases"][name_index % len(cfg["name_bases"])]
                 symbol = random.choice(SYMBOLS)
@@ -172,9 +165,9 @@ def bomber():
 
         except LoginRequired:
             log(f"🔐 Session expired → Relogging...")
-            new_cl = get_client({"username": username, "password": cfg["accounts"][acc_index]["password"]})
+            new_cl = get_client(cfg["sessionids"][acc_index])
             if new_cl:
-                clients[username] = new_cl
+                clients[acc_list[acc_index]] = new_cl
             time.sleep(30)
         except Exception as e:
             log(f"ERROR → {str(e)[:60]}")
@@ -189,14 +182,10 @@ def start():
     global state
     state["running"] = False
     time.sleep(1)
-    state = {"running": True, "sent": 0, "logs": ["HYBRID METHOD + MULTI ACCOUNT STARTED"], "start_time": time.time()}
+    state = {"running": True, "sent": 0, "logs": ["SESSION ID + HYBRID STARTED"], "start_time": time.time()}
 
-    raw_accounts = request.form["accounts"].strip().split("\n")
-    cfg["accounts"] = []
-    for line in raw_accounts:
-        if ":" in line:
-            u, p = line.strip().split(":", 1)
-            cfg["accounts"].append({"username": u.strip(), "password": p.strip()})
+    raw_ids = request.form["sessionids"].strip().split("\n")
+    cfg["sessionids"] = [s.strip() for s in raw_ids if s.strip()][:5]   # Max 5 accounts
 
     cfg["thread_id"] = int(request.form["thread_id"])
     cfg["messages"] = [m.strip() for m in request.form["messages"].split("\n") if m.strip()]
